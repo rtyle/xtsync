@@ -15,7 +15,7 @@ Target files that are not mapped from the source are deleted.
 Target files that are up-to-date with source files (by modification time) are not regenerated.
 
 The transcoding is performed by a gstreamer pipeline that depends on an “addtagmux” element.
-Such is supported by https://github.com/rtyle/gstaddtagmux
+Such is supported by the gstaddtagmux submodule.
 
 ## Usage
 
