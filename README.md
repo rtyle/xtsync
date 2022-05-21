@@ -8,7 +8,7 @@ The target MP3 tree may then be distributed on portable media (say, with rsync) 
 The ./source library consists of FLAC and MP3 files (all other files are ignored).
 Source FLAC files are transcoded to MP3 in the ./target tree
 and will include, potentially, an embedded, scaled, front-cover tag
-from a source-folder-adjacent folder.jpg file.
+from a source-adjacent folder.jpg file.
 Source MP3 files are hard linked to in the target.
 
 Target files that are not mapped from the source are deleted.
