@@ -1,0 +1,3 @@
+[submodule "gstaddtagmux"]
+	path = gstaddtagmux
+	url = https://github.com/rtyle/gstaddtagmux

@@ -1,0 +1,384 @@
+#!/usr/bin/python
+
+from __future__ import annotations
+
+import __main__
+import multiprocessing
+import os
+import pathlib
+import sys
+import threading
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
+from stat import S_ISDIR
+
+import gi
+
+gi.require_version("GLib", "2.0")
+gi.require_version("GObject", "2.0")
+gi.require_version("Gst", "1.0")
+from gi.repository import GLib, GObject, Gst
+
+atomic_print_lock = threading.Lock()
+
+
+def atomic_print(*args, **kwargs):
+    with atomic_print_lock:
+        print(*args, **kwargs)
+
+
+class Directory(AbstractContextManager):
+    def __init__(self, name: str, parent: Directory | None = None):
+        self.name = name
+        self.parent = parent
+
+    def path(self) -> list[str]:
+        return [self.name] if self.parent is None else self.parent.path() + [self.name]
+
+    def is_open(self) -> bool:
+        return hasattr(self, "fd")
+
+    def open(self):
+        self.fd = os.open(
+            self.name,
+            os.O_RDONLY,
+            dir_fd=None if self.parent is None else self.parent.dir_fd(),
+        )
+
+    def dir_fd(self) -> int:
+        if not self.is_open():
+            self.open()
+        return self.fd
+
+    def __exit__(self, type, value, traceback):
+        if self.is_open():
+            os.close(self.fd)
+
+
+class TargetDirectory(Directory):
+    # override: mkdir if needed
+    def dir_fd(self) -> int:
+        if not self.is_open():
+            name = self.name
+            dir_fd = self.parent.dir_fd()
+            try:
+                stat = os.stat(name, dir_fd=dir_fd)
+                if not S_ISDIR(stat.st_mode):
+                    raise ValueError(f"{self.path()} not a directory")
+            except OSError:
+                atomic_print(pathlib.PurePath(*self.path()))
+                os.mkdir(name, dir_fd=dir_fd)
+            self.open()
+        return self.fd
+
+    def prune(self):
+        with os.scandir(self.dir_fd()) as it:
+            for entry in it:
+                self.prune_child(entry)
+
+    def prune_child(self, entry: os.DirEntry):
+        dir_fd = self.dir_fd()
+        name = entry.name
+        if entry.is_dir():
+            with TargetDirectory(name, self) as child:
+                child.prune()
+            atomic_print(
+                "\trmdir\t", pathlib.PurePath(*self.path(), name), file=sys.stderr
+            )
+            os.rmdir(name, dir_fd=dir_fd)
+        else:
+            atomic_print(
+                "\tunlink\t", pathlib.PurePath(*self.path(), name), file=sys.stderr
+            )
+            os.unlink(name, dir_fd=dir_fd)
+
+
+# rule that, when invoked,
+# will reflect the source entry for the parent DirectoryRule.
+class Rule:
+    def __init__(self, entry: os.DirEntry, parent: DirectoryRule, ordinal: int = 0):
+        self.entry = entry
+        self.parent = parent
+        self.ordinal = ordinal
+
+    def source_name(self):
+        return self.entry.name
+
+    def target_name(self):
+        return self.source_name()
+
+    def invoke(self) -> list[str]:
+        return [self.target_name()]
+
+
+# rule that, when invoked,
+# will reflect the source entry for the parent DirectoryRule
+# as a directory.
+# the reflection is defined by FileRule mappings from source entry extensions
+# and, optionally, DirectoryRule mappings.
+class DirectoryRule(Rule):
+    def __init__(
+        self,
+        entry: os.DirEntry | None = None,
+        parent: DirectoryRule | None = None,
+        ordinal: int | None = None,
+        file_rule: Mapping[str, Callable[[os.DirEntry, DirectoryRule], Rule]]
+        | None = None,
+        directory_rule: Mapping[
+            str, Callable[[os.DirEntry, DirectoryRule], DirectoryRule]
+        ]
+        | None = None,
+    ):
+        super().__init__(entry, parent, ordinal if None != ordinal else 0)
+        self.file_rule = (
+            file_rule if file_rule else parent.file_rule if parent else None
+        )
+        self.directory_rule = (
+            directory_rule
+            if directory_rule
+            else parent.directory_rule
+            if parent
+            else None
+        )
+
+    def rule(self, entry: os.DirEntry) -> list[Rule]:
+        _, ext = os.path.splitext(entry.name)
+        if entry.is_dir():
+            if self.directory_rule and ext in self.directory_rule:
+                return [self.directory_rule[ext](entry, self)]
+            else:
+                return [DirectoryRule(entry, self)]
+        if self.file_rule and ext in self.file_rule:
+            return [self.file_rule[ext](entry, self)]
+        return []
+
+    def invoke_from(
+        self,
+        source_name: str,
+        parent_source: Directory,
+        target_name: str,
+        parent_target: Directory,
+    ) -> list[str]:
+        with Directory(source_name, parent_source) as self.source, TargetDirectory(
+            target_name, parent_target
+        ) as self.target:
+            # compile rules from source directory entries
+            rules = []
+            with os.scandir(self.source.dir_fd()) as it:
+                for entry in it:
+                    rules += self.rule(entry)
+            # invoke the rules in sorted order and gather targets
+            targets = []
+            for rule in sorted(rules, key=lambda rule: rule.ordinal):
+                targets += rule.invoke()
+            # prune non targets
+            if self.target.is_open():
+                with os.scandir(self.target.dir_fd()) as it:
+                    for entry in it:
+                        if entry.name not in targets:
+                            self.target.prune_child(entry)
+            return super().invoke() if self.entry and 0 < len(targets) else []
+
+    def invoke(self) -> list[str]:
+        return self.invoke_from(
+            self.source_name(),
+            self.parent.source,
+            self.target_name(),
+            self.parent.target,
+        )
+
+
+class TopDirectoryRule(DirectoryRule):
+    def __init__(
+        self,
+        top: str,
+        source: str,
+        target: str,
+        file_rule: Mapping[str, Callable[[os.DirEntry, DirectoryRule], Rule]]
+        | None = None,
+        directory_rule: Mapping[
+            str, Callable[[os.DirEntry, DirectoryRule], DirectoryRule]
+        ]
+        | None = None,
+    ):
+        super().__init__(None, None, None, file_rule, directory_rule)
+        self.top = Directory(top)
+        self.source = source
+        self.target = target
+
+    def invoke(self) -> list[str]:
+        return self.invoke_from(self.source, self.top, self.target, self.top)
+
+
+# abstract rule that, when invoked,
+# will reflect the source entry for the parent DirectoryRule
+# as a file.
+class FileRule(Rule):
+    pass
+
+
+# rule that, when invoked,
+# will reflect the source entry for the parent DirectoryRule
+# as a file link.
+class LinkFileRule(FileRule):
+    def invoke(self) -> list[str]:
+        source_name = self.source_name()
+        target_name = self.target_name()
+        self.parent.target.dir_fd()  # mkdir, if needed
+
+        source_path = pathlib.Path(*self.parent.source.path(), source_name)
+        target_path = pathlib.Path(*self.parent.target.path(), target_name)
+        if target_path.exists():
+            if self.entry.inode() == target_path.stat().st_ino:
+                return [target_name]
+            else:
+                atomic_print("\tunlink\t", str(target_path), file=sys.stderr)
+                target_path.unlink()
+        atomic_print(str(target_path))
+        source_path.link_to(target_path)
+        return [target_name]
+
+
+def time(path: pathlib.Path):
+    return path.stat().st_mtime if path.exists() else 0
+
+
+def chain(bin: Gst.Bin, element: Gst.Element, *sequence):
+    bin.add(element)
+    for next in sequence:
+        bin.add(next)
+        element.link(next)
+        element = next
+
+
+def element(name, **properties):
+    element = Gst.ElementFactory.make(name)
+    for name, value in properties.items():
+        element.set_property(name, value)
+    return element
+
+
+# rule that, when invoked,
+# will reflect the source entry for the parent DirectoryRule
+# as an mp3 file with, potentially, an embedded, scaled, front-cover tag
+# from a source-adjacent folder.jpg file.
+class FlacToMp3FileRule(FileRule):
+
+    # Spawn a Thread to run (and monitor) a gstreamer transcoding pipeline
+    # with a limit on the number of concurrently running such jobs.
+    class Spawn(threading.Thread):
+        pool = threading.Semaphore(multiprocessing.cpu_count())  # concurrency limit
+
+        def __init__(
+            self,
+            audio_source_path: pathlib.Path,
+            audio_target_path: pathlib.Path,
+            image_source_path: pathlib.Path,
+        ):
+            self.pool.acquire()
+            super().__init__()
+            self.audio_source_path = audio_source_path
+            self.audio_target_path = audio_target_path
+            self.image_source_path = image_source_path
+            self.start()
+
+        def run(self):
+            loop = GLib.MainLoop()
+
+            pipeline = Gst.Pipeline()
+            addtagmux = element("addtagmux")
+            chain(
+                pipeline,
+                element("filesrc", location=str(self.audio_source_path)),
+                addtagmux,
+                element("flacparse"),
+                element("flacdec"),
+                element("audioconvert"),
+                element("lamemp3enc"),
+                element("id3v2mux"),
+                element("filesink", location=str(self.audio_target_path)),
+            )
+            if self.image_source_path.exists():
+                tag = element(
+                    "capsfilter", caps=Gst.Caps("image/jpeg,image-type=front-cover")
+                )
+                chain(
+                    pipeline,
+                    element("filesrc", location=str(self.image_source_path)),
+                    element("jpegparse"),
+                    element("jpegdec"),
+                    element("videoscale"),
+                    element(
+                        "capsfilter", caps=Gst.Caps("video/x-raw,width=300,height=300")
+                    ),
+                    element("jpegenc"),
+                    tag,
+                )
+                tag.link(addtagmux)
+
+            def on_message(
+                bus: Gst.Bus, message: Gst.Message, loop: GObject.MainLoop
+            ) -> bool:
+                mtype = message.type
+                if mtype == Gst.MessageType.EOS:
+                    atomic_print(self.audio_target_path)
+                    loop.quit()
+                elif mtype == Gst.MessageType.ERROR:
+                    err, debug = message.parse_error()
+                    atomic_print(
+                        "\t", str(self.audio_target_path), err, debug, file=sys.stderr
+                    )
+                    loop.quit()
+                elif mtype == Gst.MessageType.WARNING:
+                    err, debug = message.parse_warning()
+                    atomic_print(
+                        "\t", str(self.audio_target_path), err, debug, file=sys.stderr
+                    )
+                return True
+
+            bus = pipeline.get_bus()
+            bus.add_signal_watch()
+            bus.connect("message", on_message, loop)
+
+            pipeline.set_state(Gst.State.PLAYING)
+            try:
+                loop.run()  # blocks until loop.quit()
+            except:
+                loop.quit()
+            pipeline.set_state(Gst.State.NULL)
+
+            bus.remove_signal_watch()
+
+            self.pool.release()
+
+    def target_name(self):
+        base, _ = os.path.splitext(self.source_name())
+        return base + ".mp3"
+
+    def invoke(self) -> list[str]:
+        source_name = self.source_name()
+        target_name = self.target_name()
+        self.parent.target.dir_fd()  # mkdir, if needed
+
+        image_source_path = pathlib.Path(*self.parent.source.path(), "folder.jpg")
+        audio_source_path = pathlib.Path(*self.parent.source.path(), source_name)
+        source_time = max(map(time, [image_source_path, audio_source_path]))
+
+        audio_target_path = pathlib.Path(*self.parent.target.path(), target_name)
+        target_time = time(audio_target_path)
+
+        if target_time < source_time:
+            self.Spawn(audio_source_path, audio_target_path, image_source_path)
+
+        return [target_name]
+
+
+os.environ["GST_PLUGIN_PATH"] = str(
+    pathlib.Path(*(pathlib.Path(__main__.__file__).parent.parts), "gstaddtagmux")
+)
+Gst.init([])
+
+TopDirectoryRule(
+    ".", "source", "target", {".flac": FlacToMp3FileRule, ".mp3": LinkFileRule}
+).invoke()
