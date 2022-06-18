@@ -301,7 +301,7 @@ class FlacToMp3FileRule(FileRule):
             )
             if self.image_source_path.exists():
                 tag = element(
-                    "capsfilter", caps=Gst.Caps("image/jpeg,image-type=front-cover")
+                    "capsfilter", caps=Gst.Caps.from_string("image/jpeg,image-type=front-cover")
                 )
                 chain(
                     pipeline,
@@ -310,7 +310,7 @@ class FlacToMp3FileRule(FileRule):
                     element("jpegdec"),
                     element("videoscale"),
                     element(
-                        "capsfilter", caps=Gst.Caps("video/x-raw,width=300,height=300")
+                        "capsfilter", caps=Gst.Caps.from_string("video/x-raw,width=300,height=300")
                     ),
                     element("jpegenc"),
                     tag,
