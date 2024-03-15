@@ -17,6 +17,21 @@ Target files that are up-to-date with source files (by modification time) are no
 The transcoding is performed by a gstreamer pipeline that depends on an “addtagmux” element.
 Such is supported by the gstaddtagmux submodule.
 
+## Deployment
+
+Git this repository as appropriate. For examples,
+
+    git clone https://github.com/rtyle/xtsync.git
+    git clone git@github.com:rtyle/xtsync.git
+
+Update all submodules of this repository.
+
+    git submodule update --init --recursive
+
+Build gstaddmux submodule
+
+    (cd gstaddtagmux; make)
+
 ## Usage
 
 (cd Music; ~/xtsync/xtsync.py)
