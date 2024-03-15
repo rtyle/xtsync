@@ -34,4 +34,4 @@ Build gstaddmux submodule
 
 ## Usage
 
-(cd Music; ~/xtsync/xtsync.py)
+(cd Music; xtsync)
