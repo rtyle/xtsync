@@ -266,7 +266,14 @@ def element(name, **properties):
 # will reflect the source entry for the parent DirectoryRule
 # as a transcoded file with, potentially, an embedded, scaled, front-cover tag
 # from a source-adjacent folder.jpg file.
-class FlacFileRule(FileRule):
+class FlacFileRule(FileRule, ABC):
+
+    # concrete subclasses should implement this
+    @abstractmethod
+    def encode(
+        self, sink: pathlib.Path, pipeline: Gst.Bin, previous: Gst.Element
+    ) -> Gst.Element:
+        pass
 
     # Spawn a Thread to run (and monitor) a gstreamer transcoding pipeline
     # with a limit on the number of concurrently running such jobs.
@@ -385,13 +392,15 @@ class FlacFileRule(FileRule):
 
 # concrete FlacFileRule that encodes mp3
 class Mp3FromFlacFileRule(FlacFileRule):
-    def encode(self, audio_target_path, pipeline: Gst.Bin, previous: Gst.Element) -> Gst.Element:
+    def encode(
+        self, sink: pathlib.Path, pipeline: Gst.Bin, previous: Gst.Element
+    ) -> Gst.Element:
         return extend(
             pipeline,
             previous,
             element("lamemp3enc"),
             element("id3v2mux"),
-            element("filesink", location=str(audio_target_path)),
+            element("filesink", location=str(sink)),
         )
 
 
