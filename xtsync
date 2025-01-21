@@ -123,12 +123,12 @@ class DirectoryRule(Rule):
         entry: os.DirEntry | None = None,
         parent: DirectoryRule | None = None,
         ordinal: int | None = None,
-        file_rule: Mapping[str, Callable[[os.DirEntry, DirectoryRule], Rule]]
-        | None = None,
-        directory_rule: Mapping[
-            str, Callable[[os.DirEntry, DirectoryRule], DirectoryRule]
-        ]
-        | None = None,
+        file_rule: (
+            Mapping[str, Callable[[os.DirEntry, DirectoryRule], Rule]] | None
+        ) = None,
+        directory_rule: (
+            Mapping[str, Callable[[os.DirEntry, DirectoryRule], DirectoryRule]] | None
+        ) = None,
     ):
         super().__init__(entry, parent, ordinal if None != ordinal else 0)
         self.file_rule = (
@@ -137,9 +137,7 @@ class DirectoryRule(Rule):
         self.directory_rule = (
             directory_rule
             if directory_rule
-            else parent.directory_rule
-            if parent
-            else None
+            else parent.directory_rule if parent else None
         )
 
     def rule(self, entry: os.DirEntry) -> list[Rule]:
@@ -195,12 +193,12 @@ class TopDirectoryRule(DirectoryRule):
         top: str,
         source: str,
         target: str,
-        file_rule: Mapping[str, Callable[[os.DirEntry, DirectoryRule], Rule]]
-        | None = None,
-        directory_rule: Mapping[
-            str, Callable[[os.DirEntry, DirectoryRule], DirectoryRule]
-        ]
-        | None = None,
+        file_rule: (
+            Mapping[str, Callable[[os.DirEntry, DirectoryRule], Rule]] | None
+        ) = None,
+        directory_rule: (
+            Mapping[str, Callable[[os.DirEntry, DirectoryRule], DirectoryRule]] | None
+        ) = None,
     ):
         super().__init__(None, None, None, file_rule, directory_rule)
         self.top = Directory(top)
@@ -244,12 +242,17 @@ def time(path: pathlib.Path):
     return path.stat().st_mtime if path.exists() else 0
 
 
-def chain(bin: Gst.Bin, element: Gst.Element, *sequence):
-    bin.add(element)
+def extend(bin: Gst.Bin, element: Gst.Element, *sequence) -> Gst.Element:
     for next in sequence:
         bin.add(next)
         element.link(next)
         element = next
+    return element
+
+
+def chain(bin: Gst.Bin, element: Gst.Element, *sequence) -> Gst.Element:
+    bin.add(element)
+    return extend(bin, element, *sequence)
 
 
 def element(name, **properties):
@@ -259,11 +262,11 @@ def element(name, **properties):
     return element
 
 
-# rule that, when invoked,
+# abstract rule that, when invoked,
 # will reflect the source entry for the parent DirectoryRule
-# as an mp3 file with, potentially, an embedded, scaled, front-cover tag
+# as a transcoded file with, potentially, an embedded, scaled, front-cover tag
 # from a source-adjacent folder.jpg file.
-class FlacToMp3FileRule(FileRule):
+class FlacFileRule(FileRule):
 
     # Spawn a Thread to run (and monitor) a gstreamer transcoding pipeline
     # with a limit on the number of concurrently running such jobs.
@@ -272,12 +275,14 @@ class FlacToMp3FileRule(FileRule):
 
         def __init__(
             self,
+            rule: FlacFileRule,
             audio_source_path: pathlib.Path,
             audio_target_path: pathlib.Path,
             image_source_path: pathlib.Path,
         ):
             self.pool.acquire()
             super().__init__()
+            self.rule = rule
             self.audio_source_path = audio_source_path
             self.audio_target_path = audio_target_path
             self.image_source_path = image_source_path
@@ -288,20 +293,23 @@ class FlacToMp3FileRule(FileRule):
 
             pipeline = Gst.Pipeline()
             addtagmux = element("addtagmux")
-            chain(
+
+            self.rule.encode(
+                self.audio_target_path,
                 pipeline,
-                element("filesrc", location=str(self.audio_source_path)),
-                addtagmux,
-                element("flacparse"),
-                element("flacdec"),
-                element("audioconvert"),
-                element("lamemp3enc"),
-                element("id3v2mux"),
-                element("filesink", location=str(self.audio_target_path)),
+                chain(
+                    pipeline,
+                    element("filesrc", location=str(self.audio_source_path)),
+                    addtagmux,
+                    element("flacparse"),
+                    element("flacdec"),
+                    element("audioconvert"),
+                ),
             )
             if self.image_source_path.exists():
                 tag = element(
-                    "capsfilter", caps=Gst.Caps.from_string("image/jpeg,image-type=front-cover")
+                    "capsfilter",
+                    caps=Gst.Caps.from_string("image/jpeg,image-type=front-cover"),
                 )
                 chain(
                     pipeline,
@@ -310,7 +318,8 @@ class FlacToMp3FileRule(FileRule):
                     element("jpegdec"),
                     element("videoscale"),
                     element(
-                        "capsfilter", caps=Gst.Caps.from_string("video/x-raw,width=300,height=300")
+                        "capsfilter",
+                        caps=Gst.Caps.from_string("video/x-raw,width=300,height=300"),
                     ),
                     element("jpegenc"),
                     tag,
@@ -369,9 +378,21 @@ class FlacToMp3FileRule(FileRule):
         target_time = time(audio_target_path)
 
         if target_time < source_time:
-            self.Spawn(audio_source_path, audio_target_path, image_source_path)
+            self.Spawn(self, audio_source_path, audio_target_path, image_source_path)
 
         return [target_name]
+
+
+# concrete FlacFileRule that encodes mp3
+class Mp3FromFlacFileRule(FlacFileRule):
+    def encode(self, audio_target_path, pipeline: Gst.Bin, previous: Gst.Element) -> Gst.Element:
+        return extend(
+            pipeline,
+            previous,
+            element("lamemp3enc"),
+            element("id3v2mux"),
+            element("filesink", location=str(audio_target_path)),
+        )
 
 
 os.environ["GST_PLUGIN_PATH"] = str(
@@ -380,5 +401,5 @@ os.environ["GST_PLUGIN_PATH"] = str(
 Gst.init([])
 
 TopDirectoryRule(
-    ".", "source", "target", {".flac": FlacToMp3FileRule, ".mp3": LinkFileRule}
+    ".", "source", "target", {".flac": Mp3FromFlacFileRule, ".mp3": LinkFileRule}
 ).invoke()
