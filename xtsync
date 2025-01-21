@@ -242,7 +242,7 @@ def time(path: pathlib.Path):
     return path.stat().st_mtime if path.exists() else 0
 
 
-def extend(bin: Gst.Bin, element: Gst.Element, *sequence) -> Gst.Element:
+def chain(bin: Gst.Bin, element: Gst.Element, *sequence) -> Gst.Element:
     for next in sequence:
         bin.add(next)
         element.link(next)
@@ -250,9 +250,9 @@ def extend(bin: Gst.Bin, element: Gst.Element, *sequence) -> Gst.Element:
     return element
 
 
-def chain(bin: Gst.Bin, element: Gst.Element, *sequence) -> Gst.Element:
+def stream(bin: Gst.Bin, element: Gst.Element, *sequence) -> Gst.Element:
     bin.add(element)
-    return extend(bin, element, *sequence)
+    return chain(bin, element, *sequence)
 
 
 def element(name, **properties):
@@ -304,7 +304,7 @@ class FlacFileRule(FileRule, ABC):
             self.rule.encode(
                 self.audio_target_path,
                 pipeline,
-                chain(
+                stream(
                     pipeline,
                     element("filesrc", location=str(self.audio_source_path)),
                     addtagmux,
@@ -314,11 +314,7 @@ class FlacFileRule(FileRule, ABC):
                 ),
             )
             if self.image_source_path.exists():
-                tag = element(
-                    "capsfilter",
-                    caps=Gst.Caps.from_string("image/jpeg,image-type=front-cover"),
-                )
-                chain(
+                stream(
                     pipeline,
                     element("filesrc", location=str(self.image_source_path)),
                     element("jpegparse"),
@@ -329,9 +325,11 @@ class FlacFileRule(FileRule, ABC):
                         caps=Gst.Caps.from_string("video/x-raw,width=300,height=300"),
                     ),
                     element("jpegenc"),
-                    tag,
-                )
-                tag.link(addtagmux)
+                    element(
+                        "capsfilter",
+                        caps=Gst.Caps.from_string("image/jpeg,image-type=front-cover"),
+                    ),
+                ).link(addtagmux)
 
             def on_message(
                 bus: Gst.Bus, message: Gst.Message, loop: GObject.MainLoop
@@ -393,11 +391,11 @@ class FlacFileRule(FileRule, ABC):
 # concrete FlacFileRule that encodes mp3
 class Mp3FromFlacFileRule(FlacFileRule):
     def encode(
-        self, sink: pathlib.Path, pipeline: Gst.Bin, previous: Gst.Element
+        self, sink: pathlib.Path, pipeline: Gst.Bin, tail: Gst.Element
     ) -> Gst.Element:
-        return extend(
+        return chain(
             pipeline,
-            previous,
+            tail,
             element("lamemp3enc"),
             element("id3v2mux"),
             element("filesink", location=str(sink)),
