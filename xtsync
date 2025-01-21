@@ -271,9 +271,9 @@ class FlacFileRule(FileRule, ABC):
     # concrete subclasses should implement this
     @abstractmethod
     def encode(
-        self, sink: pathlib.Path, pipeline: Gst.Bin, previous: Gst.Element
+        self, sink: pathlib.Path, pipeline: Gst.Bin, tail: Gst.Element
     ) -> Gst.Element:
-        pass
+        return tail
 
     # Spawn a Thread to run (and monitor) a gstreamer transcoding pipeline
     # with a limit on the number of concurrently running such jobs.
