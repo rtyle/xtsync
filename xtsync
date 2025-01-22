@@ -369,10 +369,6 @@ class FlacFileRule(FileRule, ABC):
 
             self.pool.release()
 
-    def target_name(self):
-        base, _ = os.path.splitext(self.source_name())
-        return base + ".mp3"
-
     def invoke(self) -> list[str]:
         source_name = self.source_name()
         target_name = self.target_name()
@@ -393,12 +389,30 @@ class FlacFileRule(FileRule, ABC):
 
 # concrete FlacFileRule that encodes mp3 with id3v2 tags
 class Mp3FromFlacFileRule(FlacFileRule):
+    def target_name(self):
+        base, _ = os.path.splitext(self.source_name())
+        return base + ".mp3"
+
     def encode(self, pipeline: Gst.Bin, tail: Gst.Element) -> Gst.Element:
         return chain(
             pipeline,
             tail,
             element("lamemp3enc"),
             element("id3v2mux"),
+        )
+
+
+# concrete FlacFileRule that encodes flac with vorbis tags
+class FlacFromFlacFileRule(FlacFileRule):
+    def target_name(self):
+        base, _ = os.path.splitext(self.source_name())
+        return base + ".flac"
+
+    def encode(self, pipeline: Gst.Bin, tail: Gst.Element) -> Gst.Element:
+        return chain(
+            pipeline,
+            tail,
+            element("flacenc"),
         )
 
 
