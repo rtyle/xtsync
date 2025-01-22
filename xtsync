@@ -242,17 +242,17 @@ def time(path: pathlib.Path):
     return path.stat().st_mtime if path.exists() else 0
 
 
-def chain(bin: Gst.Bin, element: Gst.Element, *sequence) -> Gst.Element:
+def chain(bin: Gst.Bin, tail: Gst.Element, *sequence) -> Gst.Element:
     for next in sequence:
         bin.add(next)
-        element.link(next)
-        element = next
-    return element
+        tail.link(next)
+        tail = next
+    return tail
 
 
-def stream(bin: Gst.Bin, element: Gst.Element, *sequence) -> Gst.Element:
-    bin.add(element)
-    return chain(bin, element, *sequence)
+def stream(bin: Gst.Bin, head: Gst.Element, *sequence) -> Gst.Element:
+    bin.add(head)
+    return chain(bin, head, *sequence)
 
 
 def element(name, **properties):
@@ -301,17 +301,20 @@ class FlacFileRule(FileRule, ABC):
             pipeline = Gst.Pipeline()
             addtagmux = element("addtagmux")
 
-            self.rule.encode(
-                self.audio_target_path,
+            chain(
                 pipeline,
-                stream(
+                self.rule.encode(
                     pipeline,
-                    element("filesrc", location=str(self.audio_source_path)),
-                    addtagmux,
-                    element("flacparse"),
-                    element("flacdec"),
-                    element("audioconvert"),
+                    stream(
+                        pipeline,
+                        element("filesrc", location=str(self.audio_source_path)),
+                        addtagmux,
+                        element("flacparse"),
+                        element("flacdec"),
+                        element("audioconvert"),
+                    ),
                 ),
+                element("filesink", location=str(self.audio_target_path)),
             )
             if self.image_source_path.exists():
                 stream(
@@ -388,17 +391,14 @@ class FlacFileRule(FileRule, ABC):
         return [target_name]
 
 
-# concrete FlacFileRule that encodes mp3
+# concrete FlacFileRule that encodes mp3 with id3v2 tags
 class Mp3FromFlacFileRule(FlacFileRule):
-    def encode(
-        self, sink: pathlib.Path, pipeline: Gst.Bin, tail: Gst.Element
-    ) -> Gst.Element:
+    def encode(self, pipeline: Gst.Bin, tail: Gst.Element) -> Gst.Element:
         return chain(
             pipeline,
             tail,
             element("lamemp3enc"),
             element("id3v2mux"),
-            element("filesink", location=str(sink)),
         )
 
 
