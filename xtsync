@@ -275,6 +275,11 @@ class FlacFileRule(FileRule, ABC):
     ) -> Gst.Element:
         return tail
 
+    # concrete subclasses should implement this
+    @abstractmethod
+    def scale(self) -> str:
+        return ""
+
     # Spawn a Thread to run (and monitor) a gstreamer transcoding pipeline
     # with a limit on the number of concurrently running such jobs.
     class Spawn(threading.Thread):
@@ -325,7 +330,7 @@ class FlacFileRule(FileRule, ABC):
                     element("videoscale"),
                     element(
                         "capsfilter",
-                        caps=Gst.Caps.from_string("video/x-raw,width=300,height=300"),
+                        caps=Gst.Caps.from_string("video/x-raw" + self.rule.scale()),
                     ),
                     element("jpegenc"),
                     element(
@@ -401,6 +406,9 @@ class Mp3FromFlacFileRule(FlacFileRule):
             element("id3v2mux"),
         )
 
+    def scale(self) -> str:
+        return ",width=300,height=300"
+
 
 # concrete FlacFileRule that encodes flac with vorbis tags
 class FlacFromFlacFileRule(FlacFileRule):
@@ -414,6 +422,9 @@ class FlacFromFlacFileRule(FlacFileRule):
             tail,
             element("flacenc"),
         )
+
+    def scale(self) -> str:
+        return ",width=600,height=600"
 
 
 os.environ["GST_PLUGIN_PATH"] = str(
