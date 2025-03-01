@@ -234,7 +234,7 @@ class LinkFileRule(FileRule):
                 atomic_print("\tunlink\t", str(target_path), file=sys.stderr)
                 target_path.unlink()
         atomic_print(str(target_path))
-        source_path.link_to(target_path)
+        target_path.hardlink_to(source_path)
         return [target_name]
 
 
