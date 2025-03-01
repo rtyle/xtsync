@@ -433,5 +433,9 @@ os.environ["GST_PLUGIN_PATH"] = str(
 Gst.init([])
 
 TopDirectoryRule(
-    ".", "source", "target", {".flac": Mp3FromFlacFileRule, ".mp3": LinkFileRule}
+    ".", "source", "honda_usb", {".flac": Mp3FromFlacFileRule, ".mp3": LinkFileRule}
+).invoke()
+
+TopDirectoryRule(
+    ".", "source", "bmw.usb", {".flac": FlacFromFlacFileRule, ".mp3": LinkFileRule}
 ).invoke()
